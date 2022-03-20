@@ -1,7 +1,9 @@
 package codes.writeonce.maven.plugin.pkg;
 
 import codes.writeonce.templates.ArrayDequePool;
+import codes.writeonce.templates.StringBuilderAppendable;
 import codes.writeonce.templates.TemplateParser;
+import codes.writeonce.templates.TemplateResultWriter;
 import codes.writeonce.templates.Templates;
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
@@ -16,6 +18,7 @@ import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.project.MavenProject;
 import org.apache.maven.project.MavenProjectHelper;
+import org.codehaus.plexus.interpolation.reflection.ReflectionValueExtractor;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.NodeList;
@@ -36,7 +39,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Iterator;
-import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
@@ -66,9 +68,6 @@ public class PackageMojo extends AbstractMojo {
 
     @Parameter(required = true, defaultValue = "${basedir}/src/package")
     protected File sources;
-
-    @Parameter
-    private List<Attachment> attachments;
 
     @Component
     private MavenProjectHelper projectHelper;
@@ -293,6 +292,21 @@ public class PackageMojo extends AbstractMojo {
     private Properties parseAttachments(InputStream inputStream, String artifact)
             throws IOException, ParserConfigurationException, SAXException, MojoExecutionException {
 
+        final Templates projectTemplates = new Templates(
+                new ArrayDequePool<>(TemplateParser::new),
+                n -> {
+                    if (n.startsWith("project.")) {
+                        try {
+                            return String.valueOf(ReflectionValueExtractor.evaluate(n, project));
+                        } catch (Exception e) {
+                            throw new RuntimeException(e);
+                        }
+                    }
+                    return null;
+                },
+                n -> null
+        );
+
         final Properties properties = new Properties();
 
         final DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
@@ -319,19 +333,25 @@ public class PackageMojo extends AbstractMojo {
             final String version = item.getElementsByTagName("version").item(0).getTextContent();
 
             final StringBuilder builder = new StringBuilder();
-            builder.append(requireNonNull(groupId));
-            builder.append(':').append(requireNonNull(artifactId));
-            builder.append(':').append(requireNonNull(type));
+            builder.append(expandProjectProperties(projectTemplates, requireNonNull(groupId)));
+            builder.append(':').append(expandProjectProperties(projectTemplates, requireNonNull(artifactId)));
+            builder.append(':').append(expandProjectProperties(projectTemplates, requireNonNull(type)));
 
             if (classifier != null) {
-                builder.append(':').append(classifier);
+                builder.append(':').append(expandProjectProperties(projectTemplates, classifier));
             }
 
-            builder.append(':').append(requireNonNull(version));
+            builder.append(':').append(expandProjectProperties(projectTemplates, requireNonNull(version)));
             properties.setProperty(name, builder.toString());
         }
 
         return properties;
+    }
+
+    private String expandProjectProperties(Templates templates, String source) {
+        final StringBuilder builder = new StringBuilder();
+        templates.parse(source).appendTo(new TemplateResultWriter<>(new StringBuilderAppendable(builder)));
+        return builder.toString();
     }
 
     private ByteArrayOutputStream getAttachmentsStream(Properties properties) throws IOException {
